@@ -7,73 +7,80 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
-// Configuration
-// Configuration
-const POOL_ID = process.env.POOL_ID || 'btc';
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://miningcore:password@localhost:5432/miningcore';
+/**
+ * STRATUM PROXY - SHA256 (BTC/BCH) STABLE VERSION
+ * ----------------------------------------------
+ * - Focused ONLY on BTC and BCH (SHA256).
+ * - Ports match share-relay.json (30xx series).
+ * - Routes all upstream hash to ViaBTC as 'imskaa.001'.
+ */
 
-// Current Network State
-let currentBlockHeight = 0;
+// === CONFIGURATION ===
+const UPSTREAM_HOST = process.env.UPSTREAM_HOST || 'bch.viabtc.io';
+const UPSTREAM_PORT = parseInt(process.env.UPSTREAM_PORT) || 3333;
+const PROXY_USER = process.env.UPSTREAM_USER || 'imskaa.001';
+const PROXY_PASS = process.env.UPSTREAM_PASS || '123';
 
-// Global Stats
-const PROXY_ID = os.hostname() + '-' + crypto.randomBytes(4).toString('hex');
-const STATS = {
-    connectedMiners: 0,
-    sharesSubmitted: 0,
-    sharesAccepted: 0,
-    sharesRejected: 0,
-    startTime: Date.now()
+// Correct Ports from share-relay.json (BTC and BCH ONLY)
+const LISTEN_PORTS = [
+    3062, 3072, 3082, 3092, 3102, 3112, 3122, 3132, // BTC & BTC-Solo
+    3063, 3073, 3083, 3093, 3068, 3078, 3088, 3098  // BCH & BCH-Solo
+];
+
+const PORT_MAP = {
+    // BTC
+    3062: 'btc', 3072: 'btc', 3082: 'btc', 3092: 'btc',
+    3102: 'btc-solo', 3112: 'btc-solo', 3122: 'btc-solo', 3132: 'btc-solo',
+    // BCH
+    3063: 'bch', 3073: 'bch', 3083: 'bch', 3093: 'bch',
+    3068: 'bch-solo', 3078: 'bch-solo', 3088: 'bch-solo', 3098: 'bch-solo'
 };
 
-// Database Connections
-// 1. Connection for SHARES (Miningcore DB)
-const dbShares = new Client({
-    connectionString: process.env.MININGCORE_DB_URL,
-});
+// State
+let currentBlockHeight = 0;
+const PROXY_ID = os.hostname() + '-' + crypto.randomBytes(4).toString('hex');
+const STATS = {
+    miners: 0,
+    shares: 0,
+    accepted: 0,
+    rejected: 0,
+    start: Date.now(),
+    workers: {} // Tracking: { "address.worker": { s: 0, d: 0, t: 0 } }
+};
 
-// 2. Connection for STATS (Proxy Cluster DB)
-const dbStats = new Client({
-    connectionString: process.env.PROXY_DB_URL,
-});
+// === DATABASE CONNECTIONS ===
+const dbShares = new Client({ connectionString: process.env.MININGCORE_DB_URL });
+const dbStats = new Client({ connectionString: process.env.PROXY_DB_URL });
 
-// Connect to both
-Promise.all([dbShares.connect(), dbStats.connect()]).then(() => {
-    console.log('[DB] Connected to Miningcore DB (Shares) and Proxy DB (Stats)');
-}).catch(err => {
-    console.error('[DB] Connection Error:', err);
-});
+async function connectDBs() {
+    try {
+        await dbShares.connect();
+        await dbStats.connect();
+        console.log('[DB] Connected: Shares & Stats');
+    } catch (err) {
+        console.error('[DB ERROR] Authentication or Connection failed:', err.message);
+    }
+}
+connectDBs();
 
-// Update Block Height Periodically (Mocking a node or public API)
-// For simplicity, we just increment or fetch from an API in a real scenario.
-// Here we will default to a static reasonable height if we can't fetch it, 
-// or maybe just accept that stats might show 0 height.
-// Better: Fetch from a public API like blockchain.info
-// But to keep it simple and dependency-free, let's just use a hardcoded base + time
-// or try to fetch from the upstream if they send it (unlikely).
-// Strategy: Use a fixed height or 0. Miningcore dashboard might behave oddly with 0.
-// Let's try to fetch from a public API.
+// Block Height Sync
 const https = require('https');
-function updateBlockHeight() {
+async function syncBlockHeight() {
     https.get('https://blockchain.info/q/getblockcount', (res) => {
         let data = '';
-        res.on('data', (chunk) => data += chunk);
+        res.on('data', c => data += c);
         res.on('end', () => {
-            const height = parseInt(data);
-            if (!isNaN(height)) {
-                currentBlockHeight = height;
-                // console.log('Updated Block Height:', currentBlockHeight);
-            }
+            const h = parseInt(data);
+            if (!isNaN(h) && h > currentBlockHeight) currentBlockHeight = h;
         });
-    }).on('error', (err) => {
-        // console.error('Error fetching block height:', err.message);
-    });
+    }).on('error', () => { });
 }
-setInterval(updateBlockHeight, 60000); // Update every minute
-updateBlockHeight(); // Initial fetch
+setInterval(syncBlockHeight, 60000);
+syncBlockHeight();
 
-// === HEARTBEAT ===
-async function sendHeartbeat() {
-    const uptime = Math.floor((Date.now() - STATS.startTime) / 1000);
+// Heartbeat to Stats DB
+async function heartbeat() {
+    const uptime = Math.floor((Date.now() - STATS.start) / 1000);
     const query = `
         INSERT INTO proxy_stats (id, hostname, miners_connected, shares_submitted, shares_accepted, shares_rejected, uptime_seconds, last_beat)
         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
@@ -85,373 +92,127 @@ async function sendHeartbeat() {
             uptime_seconds = EXCLUDED.uptime_seconds,
             last_beat = NOW();
     `;
-    const values = [
-        PROXY_ID, os.hostname(),
-        STATS.connectedMiners,
-        STATS.sharesSubmitted, STATS.sharesAccepted, STATS.sharesRejected,
-        uptime
-    ];
-    try {
-        await dbStats.query(query, values); // Use dbStats
-    } catch (e) {
-        console.error('Heartbeat Error:', e.message);
-    }
+    const values = [PROXY_ID, os.hostname(), STATS.miners, STATS.shares, STATS.accepted, STATS.rejected, uptime];
+    try { await dbStats.query(query, values); } catch (e) { }
 }
-setInterval(sendHeartbeat, 5000);
+setInterval(heartbeat, 5000);
 
-// Multi-Port Configuration
-// BTC Ports (Normal & Solo) + BCH Ports (Normal & Solo)
-const LISTEN_PORTS = [
-    // BTC Ports
-    3062, 3072, 3082, 3092,
-    // BTC Solo Ports
-    3102, 3112, 3122, 3132,
-    // BCH Ports
-    3063, 3073, 3083, 3093,
-    // BCH Solo Ports
-    3068, 3078, 3088, 3098
-];
-
-const PORT_MAP = {
-    // BTC
-    3062: 'btc', 3072: 'btc', 3082: 'btc', 3092: 'btc',
-    // BTC Solo
-    3102: 'btc-solo', 3112: 'btc-solo', 3122: 'btc-solo', 3132: 'btc-solo',
-    // BCH
-    3063: 'bch', 3073: 'bch', 3083: 'bch', 3093: 'bch',
-    // BCH Solo
-    3068: 'bch-solo', 3078: 'bch-solo', 3088: 'bch-solo', 3098: 'bch-solo'
-};
-
-// Hardcoded Upstream Configuration (ViaBTC)
-const UPSTREAM_HOST = 'bch.viabtc.io';
-const UPSTREAM_PORT = 3333;
-const PROXY_USER = 'imskaa.001';
-const PROXY_PASS = '123';
-
-const serverFactory = (port) => {
+// === PROXY ENGINE ===
+const createProxy = (port) => {
     return net.createServer((socket) => {
-        const clientAddress = socket.remoteAddress;
-        const poolName = PORT_MAP[port] || 'unknown';
+        const ip = socket.remoteAddress;
+        let currentWorker = 'unknown';
+        let diff = 1;
+        const pending = new Set();
 
-        // Console Helper
-        const log = (msg) => {
-            const time = new Date().toLocaleTimeString();
-            console.log(`[${time}] [${poolName.toUpperCase()}] ${msg}`);
-        };
+        const log = (m) => console.log(`[${new Date().toLocaleTimeString()}] [${port}] ${m}`);
 
-        log(`New Connection from ${clientAddress} on port ${port}`);
-        STATS.connectedMiners++; // Increment Miner Count
-
+        STATS.miners++;
         const upstream = new net.Socket();
-        upstream.connect(UPSTREAM_PORT, UPSTREAM_HOST, () => {
-            // log(`Connected to Upstream ${UPSTREAM_HOST}`);
-        });
+        upstream.connect(UPSTREAM_PORT, UPSTREAM_HOST, () => { });
 
-        // Valid Share Tracking per connection
-        let workerName = 'unknown';
-        let currentDifficulty = 1;
-        const pendingShareIds = new Set(); // Track share submission IDs
-
-        // Downstream (Miner) -> Upstream
         socket.on('data', (data) => {
-            const payload = data.toString();
-
-            const lines = payload.split('\n');
-            lines.forEach(line => {
-                if (!line.trim()) return;
+            const chunks = data.toString().split('\n');
+            chunks.forEach(chunk => {
+                if (!chunk.trim()) return;
                 try {
-                    const json = JSON.parse(line);
-
+                    const json = JSON.parse(chunk);
                     if (json.method === 'mining.authorize') {
-                        if (json.params && json.params.length > 0) {
-                            workerName = json.params[0];
-                            log(`Miner Logged In: ${workerName}`);
-                        }
-
-                        // Construct proper worker name: account.worker
-                        // Assuming PROXY_USER is 'imskaa.001', we want 'imskaa.originalWorker'
-                        const accountPart = PROXY_USER.split('.')[0];
-                        const upstreamWorker = `${accountPart}.${workerName}`;
-
-                        json.params = [upstreamWorker, PROXY_PASS];
-                        const modifiedPayload = JSON.stringify(json) + '\n';
-                        upstream.write(modifiedPayload);
-
-                        // Update workerName context for logging/submit
-                        // actually we keep 'workerName' as the original for local logging, 
-                        // but we need to remember what we authorized as for 'submit'
-                        socket.authorizedWorker = upstreamWorker;
+                        currentWorker = json.params[0] || 'unknown';
+                        log(`Auth: ${currentWorker}`);
+                        // REDIRECT TO VIABTC
+                        json.params = [PROXY_USER, PROXY_PASS];
+                        upstream.write(JSON.stringify(json) + '\n');
                     }
                     else if (json.method === 'mining.submit') {
-                        if (json.params && json.params.length > 0) {
-                            // Use the same worker name we authorized with
-                            json.params[0] = socket.authorizedWorker || PROXY_USER;
-                        }
+                        json.params[0] = PROXY_USER;
+                        if (json.id) pending.add(json.id);
+                        upstream.write(JSON.stringify(json) + '\n');
 
-                        // Track ID using the request ID
-                        if (json.id) {
-                            pendingShareIds.add(json.id);
-                        }
+                        STATS.shares++;
+                        if (!STATS.workers[currentWorker]) STATS.workers[currentWorker] = { s: 0, d: 0, t: 0 };
+                        STATS.workers[currentWorker].s++;
+                        STATS.workers[currentWorker].d += diff;
+                        STATS.workers[currentWorker].t = Date.now();
 
-                        const modifiedPayload = JSON.stringify(json) + '\n';
-                        upstream.write(modifiedPayload);
-
-                        STATS.sharesSubmitted++; // Track Submission
-                        log(`Share Submitted by ${workerName} (as ${socket.authorizedWorker}) (Diff: ${currentDifficulty.toFixed(2)})`);
-                        recordShare(workerName, currentDifficulty, clientAddress, port);
+                        recordShare(currentWorker, diff, ip, port);
                     }
                     else {
-                        upstream.write(data);
+                        upstream.write(JSON.stringify(json) + '\n');
                     }
-
-                } catch (e) {
-                    upstream.write(data);
-                }
+                } catch (e) { upstream.write(chunk + '\n'); }
             });
         });
 
-        // Upstream -> Downstream (Miner)
         upstream.on('data', (data) => {
-            const payload = data.toString();
             socket.write(data);
-
-            const lines = payload.split('\n');
-            lines.forEach(line => {
-                if (!line.trim()) return;
+            data.toString().split('\n').forEach(chunk => {
+                if (!chunk.trim()) return;
                 try {
-                    const json = JSON.parse(line);
-
+                    const json = JSON.parse(chunk);
                     if (json.method === 'mining.set_difficulty') {
-                        if (json.params && json.params.length > 0) {
-                            currentDifficulty = parseFloat(json.params[0]);
-                        }
+                        diff = parseFloat(json.params[0]);
                     }
-
-                    // Check for Share Acceptance
-                    // Response to submit: {"id": ID, "result": true, ...}
-                    if (json.id && pendingShareIds.has(json.id)) {
-                        pendingShareIds.delete(json.id);
+                    if (json.id && pending.has(json.id)) {
+                        pending.delete(json.id);
                         if (json.result === true) {
-                            STATS.sharesAccepted++;
-                            log(`Share Accepted!`);
+                            STATS.accepted++;
                         } else {
-                            STATS.sharesRejected++;
-                            log(`Share REJECTED: ${JSON.stringify(json.error)}`);
+                            STATS.rejected++;
                         }
                     }
-
-                } catch (e) {
-                    // Ignore
-                }
+                } catch (e) { }
             });
         });
 
-        // Error Handling
-        socket.on('error', (err) => {
-            log(`Miner Socket Error: ${err.message}`);
-            upstream.destroy();
-        });
-
-        socket.on('close', () => {
-            STATS.connectedMiners--; // Decrement Miner Count
-            upstream.destroy();
-        });
-
-        upstream.on('error', (err) => {
-            // log(`Upstream Socket Error: ${err.message}`); // Optional
-            socket.destroy();
-        });
-
-        upstream.on('close', () => {
-            socket.destroy();
-        });
+        socket.on('error', () => upstream.destroy());
+        socket.on('close', () => { STATS.miners--; upstream.destroy(); });
+        upstream.on('error', () => socket.destroy());
+        upstream.on('close', () => socket.destroy());
     });
 };
 
-// Start Stats Server
-const STATS_PORT = 3344;
+LISTEN_PORTS.forEach(p => createProxy(p).listen(p));
+
+// === DASHBOARD API ===
 http.createServer(async (req, res) => {
-    // API Endpoint for JSON Data (AGGREGATED)
     if (req.url === '/api/stats') {
-        try {
-            // Fetch Aggregated Stats from Proxy DB
-            const result = await dbStats.query(`
-                SELECT
-                    SUM(miners_connected) as miners,
-                    SUM(shares_submitted) as submitted,
-                    SUM(shares_accepted) as accepted,
-                    SUM(shares_rejected) as rejected,
-                    MAX(uptime_seconds) as max_uptime,
-                    COUNT(*) as active_proxies
-                FROM proxy_stats
-                WHERE last_beat > NOW() - interval '30 seconds'
-            `);
-
-            const row = result.rows[0];
-
-            res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-            res.end(JSON.stringify({
-                uptime_seconds: parseInt(row.max_uptime || 0),
-                miners_connected: parseInt(row.miners || 0),
-                shares: {
-                    submitted: parseInt(row.submitted || 0),
-                    accepted: parseInt(row.accepted || 0),
-                    rejected: parseInt(row.rejected || 0)
-                },
-                pools: {
-                    active_ports: LISTEN_PORTS.length,
-                    active_proxies: parseInt(row.active_proxies || 0)
-                }
-            }));
-        } catch (e) {
-            res.writeHead(500);
-            res.end(JSON.stringify({ error: e.message }));
+        const workers = [];
+        const now = Date.now();
+        for (const [name, w] of Object.entries(STATS.workers)) {
+            if (now - w.t < 600000) {
+                const th = (w.d * Math.pow(2, 32)) / 300 / 1e12;
+                workers.push({ name, s: w.s, h: th.toFixed(2) });
+            }
         }
-    }
-    // HTML Dashboard
-    else if (req.url === '/stats' || req.url === '/') {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+            miners: STATS.miners,
+            acc: STATS.accepted,
+            rej: STATS.rejected,
+            uptime: Math.floor((Date.now() - STATS.start) / 1000),
+            workers: workers.sort((a, b) => b.s - a.s)
+        }));
+    } else if (req.url === '/' || req.url === '/stats') {
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        const html = `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stratum Proxy Dashboard</title>
-    <style>
-        :root { --bg: #0f172a; --card: #1e293b; --text: #f8fafc; --accent: #3b82f6; --success: #22c55e; --danger: #ef4444; }
-        body { margin: 0; font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 2rem; }
-        h1 { font-weight: 300; letter-spacing: 2px; margin-bottom: 2rem; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; width: 100%; max-width: 1000px; }
-        .card { background: var(--card); padding: 1.5rem; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border: 1px solid rgba(255,255,255,0.05); transition: transform 0.2s; }
-        .card:hover { transform: translateY(-2px); }
-        .label { font-size: 0.875rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; }
-        .value { font-size: 2.5rem; font-weight: 700; margin-top: 0.5rem; }
-        .success { color: var(--success); }
-        .danger { color: var(--danger); }
-        .accent { color: var(--accent); }
-        .footer { margin-top: 3rem; color: #64748b; font-size: 0.875rem; }
-        .blink { animation: pulse 2s infinite; }
-        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
-    </style>
-</head>
-<body>
-    <h1>STRATUM <span class="accent">PROXY</span> DASHBOARD</h1>
-    
-    <div class="grid">
-        <div class="card">
-            <div class="label">Connected Miners</div>
-            <div class="value accent" id="miners">0</div>
-        </div>
-        <div class="card">
-            <div class="label">Uptime</div>
-            <div class="value" id="uptime">0s</div>
-        </div>
-        <div class="card">
-            <div class="label">Shares Accepted</div>
-            <div class="value success" id="accepted">0</div>
-        </div>
-        <div class="card">
-            <div class="label">Shares Rejected</div>
-            <div class="value danger" id="rejected">0</div>
-        </div>
-    </div>
+        res.end(`<!DOCTYPE html><html><head><title>SHA256 Proxy</title><style>body{background:#0f172a;color:#fff;font-family:sans-serif;padding:2rem}h1{color:#3b82f6}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-bottom:2rem}.card{background:#1e293b;padding:1.5rem;border-radius:12px;border:1px solid #334155}.val{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:#1e293b;border-radius:12px;overflow:hidden}th,td{padding:1rem;text-align:left;border-bottom:1px solid #334155}th{color:#94a3b8;font-size:.8rem;text-transform:uppercase}</style></head><body><h1>SHA256 PROXY DASHBOARD</h1><div class="grid"><div class="card">Miners<div class="val" id="m">0</div></div><div class="card">Accepted<div class="val" style="color:#22c55e" id="a">0</div></div><div class="card">Rejected<div class="val" style="color:#ef4444" id="r">0</div></div><div class="card">Uptime<div class="val" id="u">0s</div></div></div><table><thead><tr><th>Worker</th><th>Shares</th><th>TH/s</th></tr></thead><tbody id="list"></tbody></table><script>function u(){fetch('/api/stats').then(r=>r.json()).then(d=>{document.getElementById('m').textContent=d.miners;document.getElementById('a').textContent=d.acc;document.getElementById('r').textContent=d.rej;document.getElementById('u').textContent=d.uptime+'s';let h='';d.workers.forEach(w=>{h+='<tr><td>'+w.name+'</td><td>'+w.s+'</td><td>'+w.h+'</td></tr>'});document.getElementById('list').innerHTML=h})}setInterval(u,2000);u()</script></body></html>`);
+    } else { res.writeHead(404); res.end(); }
+}).listen(3344);
 
-    <div class="footer">
-        Upstream: <span class="accent">${UPSTREAM_HOST}</span> | <span class="blink">●</span> Live 
-        | Cluster: <span class="accent" id="proxies">1</span> Node(s)
-    </div>
-
-    <script>
-        function updateStats() {
-            fetch('/api/stats')
-                .then(res => res.json())
-                .then(data => {
-                    document.getElementById('miners').textContent = data.miners_connected;
-                    document.getElementById('accepted').textContent = data.shares.accepted;
-                    document.getElementById('rejected').textContent = data.shares.rejected;
-                    document.getElementById('proxies').textContent = data.pools.active_proxies;
-                    
-                    // Format Uptime
-                    const sec = data.uptime_seconds;
-                    const h = Math.floor(sec / 3600);
-                    const m = Math.floor((sec % 3600) / 60);
-                    const s = sec % 60;
-                    document.getElementById('uptime').textContent = \`\${h}h \${m}m \${s}s\`;
-                })
-                .catch(err => console.error('Stats fetch error:', err));
-        }
-        setInterval(updateStats, 2000);
-        updateStats();
-    </script>
-</body>
-</html>
-        `;
-        res.end(html);
+// === SHARE RECORDING ===
+async function recordShare(full, diff, ip, port) {
+    const pid = PORT_MAP[port] || 'btc';
+    let addr = full;
+    let wrk = '';
+    if (full.includes('.')) {
+        const p = full.split('.');
+        addr = p[0];
+        wrk = p.slice(1).join('.') || '';
     }
-    else {
-        res.writeHead(404);
-        res.end('Not Found. Try /stats');
-    }
-}).listen(STATS_PORT, () => {
-    console.log(`[STATS] Monitoring API and Dashboard running on http://localhost:${STATS_PORT}/stats`);
-});
-
-// Start Servers on all defined ports
-LISTEN_PORTS.forEach(port => {
-    const server = serverFactory(port);
-    server.listen(port, () => {
-        console.log(`Proxy listening on port ${port} -> Forwarding to ${UPSTREAM_HOST}:${UPSTREAM_PORT}`);
-    });
-
-    server.on('error', (e) => {
-        if (e.code === 'EADDRINUSE') {
-            console.error(`[CRITICAL] Port ${port} is already in use! Did you stop Miningcore?`);
-        } else {
-            console.error(`[Error] Port ${port}:`, e);
-        }
-    });
-});
-
-async function recordShare(miner, difficulty, ipAddress, port) {
-    const derivedPoolId = PORT_MAP[port] || 'btc';
-
-    // Determine Miner vs Worker
-    let address = miner;
-    let worker = 'default';
-
-    if (miner.includes('.')) {
-        const parts = miner.split('.');
-        address = parts[0];
-        worker = parts[1];
-    }
-
     const query = `
-        INSERT INTO shares (
-            poolid, blockheight, difficulty, networkdifficulty, 
-            miner, worker, useragent, ipaddress, source, created
-        ) VALUES (
-            $1, $2, $3, $4, 
-            $5, $6, $7, $8, $9, NOW()
-        )
+        INSERT INTO shares (poolid, blockheight, difficulty, networkdifficulty, miner, worker, useragent, ipaddress, source, created)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
     `;
-
-    const values = [
-        derivedPoolId,
-        currentBlockHeight,
-        difficulty,
-        difficulty, // Network diff (approximation)
-        address,
-        worker,
-        'proxy',
-        ipAddress,
-        `port-${port}` // Store port in source for debugging
-    ];
-
-    try {
-        await dbShares.query(query, values); // Use dbShares
-    } catch (err) {
-        console.error('Database Insert Error', err);
-    }
+    const vals = [pid, currentBlockHeight, diff, diff, addr, wrk, 'proxy', ip, 'port-' + port];
+    try { await dbShares.query(query, vals); } catch (e) { }
 }
