@@ -289,10 +289,10 @@ async function recordShare(full, diff, ip, port) {
 
     try {
         await Promise.all([
-            dbShares.query(q1, v1).catch(() => { }),
-            dbStats.query(q2, v2).catch(() => { })
+            dbShares.query(q1, v1).catch((e) => { console.error('[DB ERROR] Miningcore:', e.message); }),
+            dbStats.query(q2, v2).catch((e) => { console.error('[DB ERROR] Stats:', e.message); })
         ]);
-    } catch (e) { }
+    } catch (e) { console.error('[DB ERROR]', e.message); }
 }
 
 // === REAL-TIME DASHBOARD API ===
