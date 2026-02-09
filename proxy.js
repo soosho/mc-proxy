@@ -17,25 +17,63 @@ dotenv.config();
  */
 
 // === CONFIGURATION ===
+// SHA256 Upstream (BTC/BCH/BC2)
 const UPSTREAM_HOST = process.env.UPSTREAM_HOST || 'bch.viabtc.io';
 const UPSTREAM_PORT = parseInt(process.env.UPSTREAM_PORT) || 3333;
+
+// Scrypt Upstream (LTC/DOGE)
+const UPSTREAM_HOST_SCRYPT = process.env.UPSTREAM_HOST_SCRYPT || 'ltc.poolbinance.com';
+const UPSTREAM_PORT_SCRYPT = parseInt(process.env.UPSTREAM_PORT_SCRYPT) || 3333;
+
+// Proxy credentials (same for both algorithms on Binance)
 const PROXY_USER = process.env.UPSTREAM_USER || 'imskaa.001';
 const PROXY_PASS = process.env.UPSTREAM_PASS || '123';
 
 const LISTEN_PORTS = [
-    3062, 3072, 3082, 3092, 3102, 3112, 3122, 3132, // BTC
-    3063, 3073, 3083, 3093, 3068, 3078, 3088, 3098  // BCH
+    // SHA256 - BTC
+    3062, 3072, 3082, 3092,
+    3102, 3112, 3122, 3132,
+    // SHA256 - BCH
+    3063, 3073, 3083, 3093,
+    3068, 3078, 3088, 3098,
+    // SHA256 - BC2
+    3264, 3274, 3284, 3294,
+    // Scrypt - LTC
+    3070, 3080, 3090, 3100,
+    3110, 3120, 3130, 3140,
+    // Scrypt - DOGE
+    3069, 3079, 3089, 3099,
+    3109, 3119, 3129, 3139
 ];
 
 const PORT_MAP = {
-    3062: 'btc', 3072: 'btc', 3082: 'btc', 3092: 'btc',
-    3102: 'btc-solo', 3112: 'btc-solo', 3122: 'btc-solo', 3132: 'btc-solo',
-    3063: 'bch', 3073: 'bch', 3083: 'bch', 3093: 'bch',
-    3068: 'bch-solo', 3078: 'bch-solo', 3088: 'bch-solo', 3098: 'bch-solo'
+    // SHA256 - BTC
+    3062: { pool: 'btc', algo: 'sha256' }, 3072: { pool: 'btc', algo: 'sha256' },
+    3082: { pool: 'btc', algo: 'sha256' }, 3092: { pool: 'btc', algo: 'sha256' },
+    3102: { pool: 'btc-solo', algo: 'sha256' }, 3112: { pool: 'btc-solo', algo: 'sha256' },
+    3122: { pool: 'btc-solo', algo: 'sha256' }, 3132: { pool: 'btc-solo', algo: 'sha256' },
+    // SHA256 - BCH
+    3063: { pool: 'bch', algo: 'sha256' }, 3073: { pool: 'bch', algo: 'sha256' },
+    3083: { pool: 'bch', algo: 'sha256' }, 3093: { pool: 'bch', algo: 'sha256' },
+    3068: { pool: 'bch-solo', algo: 'sha256' }, 3078: { pool: 'bch-solo', algo: 'sha256' },
+    3088: { pool: 'bch-solo', algo: 'sha256' }, 3098: { pool: 'bch-solo', algo: 'sha256' },
+    // SHA256 - BC2
+    3264: { pool: 'bc2-solo', algo: 'sha256' }, 3274: { pool: 'bc2-solo', algo: 'sha256' },
+    3284: { pool: 'bc2-solo', algo: 'sha256' }, 3294: { pool: 'bc2-solo', algo: 'sha256' },
+    // Scrypt - LTC
+    3070: { pool: 'ltc', algo: 'scrypt' }, 3080: { pool: 'ltc', algo: 'scrypt' },
+    3090: { pool: 'ltc', algo: 'scrypt' }, 3100: { pool: 'ltc', algo: 'scrypt' },
+    3110: { pool: 'ltc-solo', algo: 'scrypt' }, 3120: { pool: 'ltc-solo', algo: 'scrypt' },
+    3130: { pool: 'ltc-solo', algo: 'scrypt' }, 3140: { pool: 'ltc-solo', algo: 'scrypt' },
+    // Scrypt - DOGE
+    3069: { pool: 'doge', algo: 'scrypt' }, 3079: { pool: 'doge', algo: 'scrypt' },
+    3089: { pool: 'doge', algo: 'scrypt' }, 3099: { pool: 'doge', algo: 'scrypt' },
+    3109: { pool: 'doge-solo', algo: 'scrypt' }, 3119: { pool: 'doge-solo', algo: 'scrypt' },
+    3129: { pool: 'doge-solo', algo: 'scrypt' }, 3139: { pool: 'doge-solo', algo: 'scrypt' }
 };
 
-// State
-let currentBlockHeight = 0;
+// State - Per-pool block heights
+const blockHeights = {};
 const PROXY_ID = os.hostname() + '-' + crypto.randomBytes(4).toString('hex');
 const LOCAL_STATS = { miners: 0, accepted: 0, rejected: 0, start: Date.now() };
 
@@ -54,20 +92,35 @@ async function connectDBs() {
 }
 connectDBs();
 
-// Block Height Sync
+// Block Height Sync - Fetch from Pool API for all coins
 const https = require('https');
-async function syncBlockHeight() {
-    https.get('https://blockchain.info/q/getblockcount', (res) => {
+const POOL_API_URL = process.env.POOL_API_URL || 'https://api.ourpool.xyz/api/pools';
+
+async function syncBlockHeights() {
+    https.get(POOL_API_URL, (res) => {
         let data = '';
         res.on('data', c => data += c);
         res.on('end', () => {
-            const h = parseInt(data);
-            if (!isNaN(h) && h > currentBlockHeight) currentBlockHeight = h;
+            try {
+                const json = JSON.parse(data);
+                if (json.pools && Array.isArray(json.pools)) {
+                    json.pools.forEach(pool => {
+                        if (pool.id && pool.networkStats && pool.networkStats.blockHeight) {
+                            blockHeights[pool.id] = pool.networkStats.blockHeight;
+                        }
+                    });
+                    console.log('[SYNC] Block heights updated for', Object.keys(blockHeights).length, 'pools');
+                }
+            } catch (e) {
+                console.error('[SYNC] Failed to parse pool API:', e.message);
+            }
         });
-    }).on('error', () => { });
+    }).on('error', (e) => {
+        console.error('[SYNC] Failed to fetch pool API:', e.message);
+    });
 }
-setInterval(syncBlockHeight, 60000);
-syncBlockHeight();
+setInterval(syncBlockHeights, 30000); // Sync every 30 seconds
+syncBlockHeights();
 
 // Heartbeat for Cluster Health
 async function heartbeat() {
@@ -92,14 +145,24 @@ setInterval(heartbeat, 5000);
 const createProxy = (port) => {
     return net.createServer((socket) => {
         const ip = socket.remoteAddress;
-        const poolId = PORT_MAP[port] || 'btc';
+        const portConfig = PORT_MAP[port] || { pool: 'btc', algo: 'sha256' };
+        const poolId = portConfig.pool;
+        const algo = portConfig.algo;
         let currentWorker = 'unknown';
         let diff = 1;
         const pending = new Set();
 
+        // Determine upstream based on algorithm
+        const upstreamHost = algo === 'scrypt' ? UPSTREAM_HOST_SCRYPT : UPSTREAM_HOST;
+        const upstreamPort = algo === 'scrypt' ? UPSTREAM_PORT_SCRYPT : UPSTREAM_PORT;
+
         LOCAL_STATS.miners++;
+        console.log(`[CONNECT] ${ip} -> port ${port} (${poolId}/${algo.toUpperCase()}) | Total miners: ${LOCAL_STATS.miners}`);
+
         const upstream = new net.Socket();
-        upstream.connect(UPSTREAM_PORT, UPSTREAM_HOST, () => { });
+        upstream.connect(upstreamPort, upstreamHost, () => {
+            console.log(`[UPSTREAM] ${ip} linked to ${upstreamHost}:${upstreamPort}`);
+        });
 
         socket.on('data', (data) => {
             data.toString().split('\n').forEach(chunk => {
@@ -108,6 +171,7 @@ const createProxy = (port) => {
                     const json = JSON.parse(chunk);
                     if (json.method === 'mining.authorize') {
                         currentWorker = json.params[0] || 'unknown';
+                        console.log(`[AUTH] ${currentWorker} from ${ip} on ${poolId}`);
                         json.params = [PROXY_USER, PROXY_PASS];
                         upstream.write(JSON.stringify(json) + '\n');
                     }
@@ -115,6 +179,7 @@ const createProxy = (port) => {
                         json.params[0] = PROXY_USER;
                         if (json.id) pending.add(json.id);
                         upstream.write(JSON.stringify(json) + '\n');
+                        console.log(`[SHARE] ${currentWorker} submitted (diff: ${diff}) on ${poolId}`);
 
                         // IMMEDIATE DOUBLE-WRITE
                         recordShare(currentWorker, diff, ip, port);
@@ -140,18 +205,35 @@ const createProxy = (port) => {
             });
         });
 
-        socket.on('error', () => upstream.destroy());
-        socket.on('close', () => { LOCAL_STATS.miners--; upstream.destroy(); });
-        upstream.on('error', () => socket.destroy());
+        socket.on('error', (err) => { console.log(`[ERROR] ${currentWorker}: ${err.message}`); upstream.destroy(); });
+        socket.on('close', () => {
+            LOCAL_STATS.miners--;
+            console.log(`[DISCONNECT] ${currentWorker} from ${ip} | Remaining: ${LOCAL_STATS.miners}`);
+            upstream.destroy();
+        });
+        upstream.on('error', (err) => { console.log(`[UPSTREAM ERROR] ${currentWorker}: ${err.message}`); socket.destroy(); });
         upstream.on('close', () => socket.destroy());
     });
 };
 
-LISTEN_PORTS.forEach(p => createProxy(p).listen(p));
+// Start all proxy servers
+console.log('\n=== STRATUM PROXY STARTING ===');
+console.log(`SHA256 Upstream: ${UPSTREAM_HOST}:${UPSTREAM_PORT}`);
+console.log(`Scrypt Upstream: ${UPSTREAM_HOST_SCRYPT}:${UPSTREAM_PORT_SCRYPT}`);
+console.log(`Proxy User: ${PROXY_USER}`);
+console.log(`Listening on ${LISTEN_PORTS.length} ports...\n`);
+
+LISTEN_PORTS.forEach(p => {
+    createProxy(p).listen(p, () => {
+        const config = PORT_MAP[p];
+        console.log(`[LISTEN] Port ${p} -> ${config.pool} (${config.algo})`);
+    });
+});
 
 // === SHARE RECORDING (REAL-TIME NO BATCHING) ===
 async function recordShare(full, diff, ip, port) {
-    const pid = PORT_MAP[port] || 'btc';
+    const portConfig = PORT_MAP[port] || { pool: 'btc', algo: 'sha256' };
+    const pid = portConfig.pool;
     let addr = full;
     let wrk = '';
     if (full.includes('.')) {
@@ -160,12 +242,13 @@ async function recordShare(full, diff, ip, port) {
         wrk = p.slice(1).join('.') || '';
     }
 
-    // 1. Miningcore DB Write
+    // 1. Miningcore DB Write - Use per-pool block height
+    const poolBlockHeight = blockHeights[pid] || blockHeights['btc'] || 0;
     const q1 = `
         INSERT INTO shares (poolid, blockheight, difficulty, networkdifficulty, miner, worker, useragent, ipaddress, source, created)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
     `;
-    const v1 = [pid, currentBlockHeight, diff, diff, addr, wrk, 'proxy', ip, 'port-' + port];
+    const v1 = [pid, poolBlockHeight, diff, diff, addr, wrk, 'proxy', ip, 'port-' + port];
 
     // 2. Proxy Stats DB Update (Real-time aggregation)
     const q2 = `
