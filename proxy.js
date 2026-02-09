@@ -48,32 +48,33 @@ const LISTEN_PORTS = [
 
 const PORT_MAP = {
     // SHA256 - BTC
-    3062: { pool: 'btc', algo: 'sha256' }, 3072: { pool: 'btc', algo: 'sha256' },
-    3082: { pool: 'btc', algo: 'sha256' }, 3092: { pool: 'btc', algo: 'sha256' },
-    3102: { pool: 'btc-solo', algo: 'sha256' }, 3112: { pool: 'btc-solo', algo: 'sha256' },
-    3122: { pool: 'btc-solo', algo: 'sha256' }, 3132: { pool: 'btc-solo', algo: 'sha256' },
+    3062: { pool: 'btc', algo: 'sha256', diff: 1000 }, 3072: { pool: 'btc', algo: 'sha256', diff: 500 },
+    3082: { pool: 'btc', algo: 'sha256', diff: 100 }, 3092: { pool: 'btc', algo: 'sha256', diff: 1 },
+    3102: { pool: 'btc-solo', algo: 'sha256', diff: 25000 }, 3112: { pool: 'btc-solo', algo: 'sha256', diff: 20000 },
+    3122: { pool: 'btc-solo', algo: 'sha256', diff: 15000 }, 3132: { pool: 'btc-solo', algo: 'sha256', diff: 10000 },
     // SHA256 - BCH
-    3063: { pool: 'bch', algo: 'sha256' }, 3073: { pool: 'bch', algo: 'sha256' },
-    3083: { pool: 'bch', algo: 'sha256' }, 3093: { pool: 'bch', algo: 'sha256' },
-    3068: { pool: 'bch-solo', algo: 'sha256' }, 3078: { pool: 'bch-solo', algo: 'sha256' },
-    3088: { pool: 'bch-solo', algo: 'sha256' }, 3098: { pool: 'bch-solo', algo: 'sha256' },
+    3063: { pool: 'bch', algo: 'sha256', diff: 500 }, 3073: { pool: 'bch', algo: 'sha256', diff: 100 },
+    3083: { pool: 'bch', algo: 'sha256', diff: 10 }, 3093: { pool: 'bch', algo: 'sha256', diff: 1 },
+    3068: { pool: 'bch-solo', algo: 'sha256', diff: 25000 }, 3078: { pool: 'bch-solo', algo: 'sha256', diff: 20000 },
+    3088: { pool: 'bch-solo', algo: 'sha256', diff: 15000 }, 3098: { pool: 'bch-solo', algo: 'sha256', diff: 10000 },
     // SHA256 - BC2
-    3264: { pool: 'bc2-solo', algo: 'sha256' }, 3274: { pool: 'bc2-solo', algo: 'sha256' },
-    3284: { pool: 'bc2-solo', algo: 'sha256' }, 3294: { pool: 'bc2-solo', algo: 'sha256' },
+    3264: { pool: 'bc2-solo', algo: 'sha256', diff: 1000 }, 3274: { pool: 'bc2-solo', algo: 'sha256', diff: 500 },
+    3284: { pool: 'bc2-solo', algo: 'sha256', diff: 100 }, 3294: { pool: 'bc2-solo', algo: 'sha256', diff: 1 },
     // Scrypt - LTC
-    3070: { pool: 'ltc', algo: 'scrypt' }, 3080: { pool: 'ltc', algo: 'scrypt' },
-    3090: { pool: 'ltc', algo: 'scrypt' }, 3100: { pool: 'ltc', algo: 'scrypt' },
-    3110: { pool: 'ltc-solo', algo: 'scrypt' }, 3120: { pool: 'ltc-solo', algo: 'scrypt' },
-    3130: { pool: 'ltc-solo', algo: 'scrypt' }, 3140: { pool: 'ltc-solo', algo: 'scrypt' },
+    3070: { pool: 'ltc', algo: 'scrypt', diff: 1024 }, 3080: { pool: 'ltc', algo: 'scrypt', diff: 256 },
+    3090: { pool: 'ltc', algo: 'scrypt', diff: 64 }, 3100: { pool: 'ltc', algo: 'scrypt', diff: 16 },
+    3110: { pool: 'ltc-solo', algo: 'scrypt', diff: 1024 }, 3120: { pool: 'ltc-solo', algo: 'scrypt', diff: 256 },
+    3130: { pool: 'ltc-solo', algo: 'scrypt', diff: 64 }, 3140: { pool: 'ltc-solo', algo: 'scrypt', diff: 16 },
     // Scrypt - DOGE
-    3069: { pool: 'doge', algo: 'scrypt' }, 3079: { pool: 'doge', algo: 'scrypt' },
-    3089: { pool: 'doge', algo: 'scrypt' }, 3099: { pool: 'doge', algo: 'scrypt' },
-    3109: { pool: 'doge-solo', algo: 'scrypt' }, 3119: { pool: 'doge-solo', algo: 'scrypt' },
-    3129: { pool: 'doge-solo', algo: 'scrypt' }, 3139: { pool: 'doge-solo', algo: 'scrypt' }
+    3069: { pool: 'doge', algo: 'scrypt', diff: 1024 }, 3079: { pool: 'doge', algo: 'scrypt', diff: 256 },
+    3089: { pool: 'doge', algo: 'scrypt', diff: 64 }, 3099: { pool: 'doge', algo: 'scrypt', diff: 16 },
+    3109: { pool: 'doge-solo', algo: 'scrypt', diff: 1024 }, 3119: { pool: 'doge-solo', algo: 'scrypt', diff: 256 },
+    3129: { pool: 'doge-solo', algo: 'scrypt', diff: 64 }, 3139: { pool: 'doge-solo', algo: 'scrypt', diff: 16 }
 };
 
-// State - Per-pool block heights
+// State - Per-pool block heights and network difficulties
 const blockHeights = {};
+const networkDifficulties = {};
 const PROXY_ID = os.hostname() + '-' + crypto.randomBytes(4).toString('hex');
 const LOCAL_STATS = { miners: 0, accepted: 0, rejected: 0, start: Date.now() };
 
@@ -92,11 +93,11 @@ async function connectDBs() {
 }
 connectDBs();
 
-// Block Height Sync - Fetch from Pool API for all coins
+// Block Height & Network Difficulty Sync - Fetch from Pool API for all coins
 const https = require('https');
 const POOL_API_URL = process.env.POOL_API_URL || 'https://api.ourpool.xyz/api/pools';
 
-async function syncBlockHeights() {
+async function syncPoolData() {
     https.get(POOL_API_URL, (res) => {
         let data = '';
         res.on('data', c => data += c);
@@ -105,11 +106,16 @@ async function syncBlockHeights() {
                 const json = JSON.parse(data);
                 if (json.pools && Array.isArray(json.pools)) {
                     json.pools.forEach(pool => {
-                        if (pool.id && pool.networkStats && pool.networkStats.blockHeight) {
-                            blockHeights[pool.id] = pool.networkStats.blockHeight;
+                        if (pool.id && pool.networkStats) {
+                            if (pool.networkStats.blockHeight) {
+                                blockHeights[pool.id] = pool.networkStats.blockHeight;
+                            }
+                            if (pool.networkStats.networkDifficulty) {
+                                networkDifficulties[pool.id] = pool.networkStats.networkDifficulty;
+                            }
                         }
                     });
-                    console.log('[SYNC] Block heights updated for', Object.keys(blockHeights).length, 'pools');
+                    console.log('[SYNC] Updated', Object.keys(blockHeights).length, 'pools (heights + difficulties)');
                 }
             } catch (e) {
                 console.error('[SYNC] Failed to parse pool API:', e.message);
@@ -119,8 +125,8 @@ async function syncBlockHeights() {
         console.error('[SYNC] Failed to fetch pool API:', e.message);
     });
 }
-setInterval(syncBlockHeights, 30000); // Sync every 30 seconds
-syncBlockHeights();
+setInterval(syncPoolData, 30000); // Sync every 30 seconds
+syncPoolData();
 
 // Heartbeat for Cluster Health
 async function heartbeat() {
@@ -240,8 +246,13 @@ LISTEN_PORTS.forEach(p => {
 
 // === SHARE RECORDING (REAL-TIME NO BATCHING) ===
 async function recordShare(full, diff, ip, port) {
-    const portConfig = PORT_MAP[port] || { pool: 'btc', algo: 'sha256' };
+    const portConfig = PORT_MAP[port] || { pool: 'btc', algo: 'sha256', diff: 1 };
     const pid = portConfig.pool;
+    // Use the port's configured difficulty for share difficulty (hashrate calculation)
+    const recordedDiff = portConfig.diff;
+    // Use the actual network difficulty from pool API
+    const netDiff = networkDifficulties[pid] || networkDifficulties['btc'] || recordedDiff;
+
     let addr = full;
     let wrk = '';
     if (full.includes('.')) {
@@ -250,13 +261,13 @@ async function recordShare(full, diff, ip, port) {
         wrk = p.slice(1).join('.') || '';
     }
 
-    // 1. Miningcore DB Write - Use per-pool block height
+    // 1. Miningcore DB Write - Use per-pool block height, port diff, and real network diff
     const poolBlockHeight = blockHeights[pid] || blockHeights['btc'] || 0;
     const q1 = `
         INSERT INTO shares (poolid, blockheight, difficulty, networkdifficulty, miner, worker, useragent, ipaddress, source, created)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
     `;
-    const v1 = [pid, poolBlockHeight, diff, diff, addr, wrk, 'proxy', ip, 'port-' + port];
+    const v1 = [pid, poolBlockHeight, recordedDiff, netDiff, addr, wrk, 'proxy', ip, 'port-' + port];
 
     // 2. Proxy Stats DB Update (Real-time aggregation)
     const q2 = `
