@@ -195,11 +195,19 @@ const createProxy = (port) => {
                 if (!chunk.trim()) return;
                 try {
                     const json = JSON.parse(chunk);
-                    if (json.method === 'mining.set_difficulty') diff = parseFloat(json.params[0]);
+                    if (json.method === 'mining.set_difficulty') {
+                        diff = parseFloat(json.params[0]);
+                        console.log(`[DIFF] ${currentWorker} difficulty set to ${diff}`);
+                    }
                     if (json.id && pending.has(json.id)) {
                         pending.delete(json.id);
-                        if (json.result === true) LOCAL_STATS.accepted++;
-                        else LOCAL_STATS.rejected++;
+                        if (json.result === true) {
+                            LOCAL_STATS.accepted++;
+                            console.log(`[ACCEPTED] ${currentWorker} | Total: ${LOCAL_STATS.accepted} accepted, ${LOCAL_STATS.rejected} rejected`);
+                        } else {
+                            LOCAL_STATS.rejected++;
+                            console.log(`[REJECTED] ${currentWorker} | Reason: ${JSON.stringify(json.error || 'unknown')} | Total: ${LOCAL_STATS.rejected} rejected`);
+                        }
                     }
                 } catch (e) { }
             });
