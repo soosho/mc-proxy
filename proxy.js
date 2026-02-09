@@ -257,6 +257,9 @@ async function recordShare(full, diff, ip, port) {
     // Use the actual network difficulty from pool API
     const netDiff = networkDifficulties[pid] || networkDifficulties['btc'] || recordedDiff;
 
+    // DEBUG: Log difficulty values
+    console.log(`[RECORD] ${pid} | upstream=${diff} | recorded=${recordedDiff} | algo=${algo}`);
+
     let addr = full;
     let wrk = '';
     if (full.includes('.')) {
