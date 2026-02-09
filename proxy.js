@@ -248,8 +248,12 @@ LISTEN_PORTS.forEach(p => {
 async function recordShare(full, diff, ip, port) {
     const portConfig = PORT_MAP[port] || { pool: 'btc', algo: 'sha256', diff: 1 };
     const pid = portConfig.pool;
-    // Use the port's configured difficulty for share difficulty (hashrate calculation)
-    const recordedDiff = portConfig.diff;
+    const algo = portConfig.algo;
+
+    // For SHA256: use actual upstream diff (accurate hashrate)
+    // For Scrypt: use port's configured diff (Binance sends inflated values)
+    const recordedDiff = (algo === 'sha256') ? diff : portConfig.diff;
+
     // Use the actual network difficulty from pool API
     const netDiff = networkDifficulties[pid] || networkDifficulties['btc'] || recordedDiff;
 
