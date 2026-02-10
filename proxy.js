@@ -253,7 +253,7 @@ async function recordShare(full, diff, ip, port) {
     // For SHA256: use actual upstream diff (works fine)
     // For Scrypt: Miningcore natively divides stratum diff by shareMultiplier (65536 for LTC/DOGE)
     // before storing in DB. We must apply the same divisor here for correct hashrate reporting.
-    const recordedDiff = (algo === 'scrypt') ? diff / 65536 : diff;
+    const recordedDiff = (algo === 'scrypt') ? diff / 1 : diff;
 
     // Use the actual network difficulty from pool API
     const netDiff = networkDifficulties[pid] || networkDifficulties['btc'] || recordedDiff;
