@@ -250,9 +250,10 @@ async function recordShare(full, diff, ip, port) {
     const pid = portConfig.pool;
     const algo = portConfig.algo;
 
-    // For SHA256: use actual upstream diff (accurate hashrate)
-    // For Scrypt: use port's configured diff (Binance sends inflated values)
-    const recordedDiff = (algo === 'sha256') ? diff : portConfig.diff;
+    // For SHA256: use actual upstream diff (works fine)
+    // For Scrypt: Binance uses a base ~32x smaller than Miningcore expects, so we divide by 32
+    // to normalize the hashrate (1.18 TH -> 36 GH)
+    const recordedDiff = (algo === 'scrypt') ? Math.round(diff / 32) : diff;
 
     // Use the actual network difficulty from pool API
     const netDiff = networkDifficulties[pid] || networkDifficulties['btc'] || recordedDiff;
