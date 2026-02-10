@@ -256,6 +256,7 @@ async function recordShare(full, diff, ip, port) {
     const recordedDiff = (algo === 'scrypt') ? diff / 65536 : diff;
 
     // Use the actual network difficulty from pool API
+    const netDiff = networkDifficulties[pid] || networkDifficulties['btc'] || recordedDiff;
 
     // DEBUG: Log difficulty values
     console.log(`[RECORD] ${pid} | upstream=${diff} | recorded=${recordedDiff} | algo=${algo}`);
