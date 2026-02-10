@@ -60,16 +60,16 @@ const PORT_MAP = {
     // SHA256 - BC2
     3264: { pool: 'bc2-solo', algo: 'sha256', diff: 1000 }, 3274: { pool: 'bc2-solo', algo: 'sha256', diff: 500 },
     3284: { pool: 'bc2-solo', algo: 'sha256', diff: 100 }, 3294: { pool: 'bc2-solo', algo: 'sha256', diff: 1 },
-    // Scrypt - LTC
-    3070: { pool: 'ltc', algo: 'scrypt', diff: 1024 }, 3080: { pool: 'ltc', algo: 'scrypt', diff: 256 },
-    3090: { pool: 'ltc', algo: 'scrypt', diff: 64 }, 3100: { pool: 'ltc', algo: 'scrypt', diff: 16 },
-    3110: { pool: 'ltc-solo', algo: 'scrypt', diff: 1024 }, 3120: { pool: 'ltc-solo', algo: 'scrypt', diff: 256 },
-    3130: { pool: 'ltc-solo', algo: 'scrypt', diff: 64 }, 3140: { pool: 'ltc-solo', algo: 'scrypt', diff: 16 },
-    // Scrypt - DOGE
-    3069: { pool: 'doge', algo: 'scrypt', diff: 1024 }, 3079: { pool: 'doge', algo: 'scrypt', diff: 256 },
-    3089: { pool: 'doge', algo: 'scrypt', diff: 64 }, 3099: { pool: 'doge', algo: 'scrypt', diff: 16 },
-    3109: { pool: 'doge-solo', algo: 'scrypt', diff: 1024 }, 3119: { pool: 'doge-solo', algo: 'scrypt', diff: 256 },
-    3129: { pool: 'doge-solo', algo: 'scrypt', diff: 64 }, 3139: { pool: 'doge-solo', algo: 'scrypt', diff: 16 }
+    // Scrypt - LTC (Lowered by ~32x to fix hashrate)
+    3070: { pool: 'ltc', algo: 'scrypt', diff: 32 }, 3080: { pool: 'ltc', algo: 'scrypt', diff: 8 },
+    3090: { pool: 'ltc', algo: 'scrypt', diff: 2 }, 3100: { pool: 'ltc', algo: 'scrypt', diff: 1 },
+    3110: { pool: 'ltc-solo', algo: 'scrypt', diff: 32 }, 3120: { pool: 'ltc-solo', algo: 'scrypt', diff: 8 },
+    3130: { pool: 'ltc-solo', algo: 'scrypt', diff: 2 }, 3140: { pool: 'ltc-solo', algo: 'scrypt', diff: 1 },
+    // Scrypt - DOGE (Lowered by ~32x to fix hashrate)
+    3069: { pool: 'doge', algo: 'scrypt', diff: 32 }, 3079: { pool: 'doge', algo: 'scrypt', diff: 8 },
+    3089: { pool: 'doge', algo: 'scrypt', diff: 2 }, 3099: { pool: 'doge', algo: 'scrypt', diff: 1 },
+    3109: { pool: 'doge-solo', algo: 'scrypt', diff: 32 }, 3119: { pool: 'doge-solo', algo: 'scrypt', diff: 8 },
+    3129: { pool: 'doge-solo', algo: 'scrypt', diff: 2 }, 3139: { pool: 'doge-solo', algo: 'scrypt', diff: 1 }
 };
 
 // State - Per-pool block heights and network difficulties
@@ -250,10 +250,9 @@ async function recordShare(full, diff, ip, port) {
     const pid = portConfig.pool;
     const algo = portConfig.algo;
 
-    // For SHA256: use actual upstream diff (works fine)
-    // For Scrypt: Miningcore natively divides stratum diff by shareMultiplier (65536 for LTC/DOGE)
-    // before storing in DB. We must apply the same divisor here for correct hashrate reporting.
-    const recordedDiff = (algo === 'scrypt') ? diff / 11469 : diff;
+    // For SHA256: use actual upstream diff (accurate hashrate)
+    // For Scrypt: use port's configured diff (Binance sends inflated values)
+    const recordedDiff = (algo === 'sha256') ? diff : portConfig.diff;
 
     // Use the actual network difficulty from pool API
     const netDiff = networkDifficulties[pid] || networkDifficulties['btc'] || recordedDiff;
